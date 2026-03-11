@@ -37,12 +37,13 @@ type AgentSession struct {
 }
 
 // FindAgentFiles returns all agent-*.jsonl files in the same directory
-// as the parent session JSONL. Returns nil if none are found.
-func FindAgentFiles(parentLogPath string) []string {
+// as the parent session JSONL. Returns an error if the directory cannot
+// be read. Returns an empty slice if no agent files are found.
+func FindAgentFiles(parentLogPath string) ([]string, error) {
 	dir := filepath.Dir(parentLogPath)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("reading session directory: %w", err)
 	}
 	var paths []string
 	for _, e := range entries {
@@ -54,13 +55,16 @@ func FindAgentFiles(parentLogPath string) []string {
 			paths = append(paths, filepath.Join(dir, name))
 		}
 	}
-	return paths
+	return paths, nil
 }
 
 // FindAgentMappings scans agent-*.jsonl files alongside the parent session
 // and extracts the parent_tool_use_id from each agent's first entry.
 func FindAgentMappings(parentLogPath string) ([]AgentMapping, error) {
-	agentPaths := FindAgentFiles(parentLogPath)
+	agentPaths, err := FindAgentFiles(parentLogPath)
+	if err != nil {
+		return nil, err
+	}
 	if len(agentPaths) == 0 {
 		return nil, nil
 	}

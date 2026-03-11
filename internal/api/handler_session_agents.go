@@ -39,7 +39,7 @@ func (s *Server) handleSessionAgentList(w http.ResponseWriter, r *http.Request) 
 
 	mappings, err := sessionlog.FindAgentMappings(logPath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		writeError(w, http.StatusInternalServerError, "internal", "failed to list agents")
 		return
 	}
 	if mappings == nil {
@@ -92,7 +92,7 @@ func (s *Server) handleSessionAgentGet(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, sessionlog.ErrAgentNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", err.Error())
 		} else {
-			writeError(w, http.StatusInternalServerError, "internal", err.Error())
+			writeError(w, http.StatusInternalServerError, "internal", "failed to read agent transcript")
 		}
 		return
 	}

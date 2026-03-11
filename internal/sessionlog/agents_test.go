@@ -19,7 +19,10 @@ func TestFindAgentFiles(t *testing.T) {
 	parentPath := filepath.Join(dir, "session-abc.jsonl")
 	writeTestFile(t, parentPath, `{"uuid":"u1","type":"user"}`+"\n")
 
-	files := FindAgentFiles(parentPath)
+	files, err := FindAgentFiles(parentPath)
+	if err != nil {
+		t.Fatalf("FindAgentFiles: %v", err)
+	}
 	if len(files) != 0 {
 		t.Fatalf("expected 0 agent files, got %d", len(files))
 	}
@@ -28,9 +31,19 @@ func TestFindAgentFiles(t *testing.T) {
 	writeTestFile(t, filepath.Join(dir, "agent-ghi.jsonl"), `{"uuid":"a2"}`+"\n")
 	writeTestFile(t, filepath.Join(dir, "other.jsonl"), `{"uuid":"o1"}`+"\n")
 
-	files = FindAgentFiles(parentPath)
+	files, err = FindAgentFiles(parentPath)
+	if err != nil {
+		t.Fatalf("FindAgentFiles: %v", err)
+	}
 	if len(files) != 2 {
 		t.Fatalf("expected 2 agent files, got %d: %v", len(files), files)
+	}
+}
+
+func TestFindAgentFiles_BadDir(t *testing.T) {
+	_, err := FindAgentFiles("/nonexistent/path/session.jsonl")
+	if err == nil {
+		t.Fatal("expected error for nonexistent directory")
 	}
 }
 
