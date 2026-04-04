@@ -11,7 +11,6 @@ Hands-on guides for learning Gas City's core concepts, from creating a city to o
 | 3 | [Sessions](sessions.md) | Running and interacting with agents | 1st Draft |
 | 4 | [Formulas](formulas.md) | Declarative workflow templates | 1st Draft |
 | 5 | [Beads](beads.md) | The universal work primitive | 1st Draft |
-| — | [Rigs](rigs.md) | Rig reference (fields, status, restart) | Reference |
 
 ## Supporting files
 
