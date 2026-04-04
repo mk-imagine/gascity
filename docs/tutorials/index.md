@@ -8,9 +8,9 @@ description: Hands-on guides for learning Gas City's core concepts.
 | Tutorial | Description | Status |
 |----------|-------------|--------|
 | [Cities, Rigs, and Packs](cities.md) | Creating and managing a workspace | Reviewable |
-| [Agents](agents.md) | Configuring agent templates | 1st Draft |
-| [Sessions](sessions.md) | Running and interacting with agents | 1st Draft |
-| [Formulas](formulas.md) | Declarative workflow templates | 1st Draft |
+| [Agents](agents.md) | Configuring agent templates | Reviewable |
+| [Sessions](sessions.md) | Running and interacting with agents | Reviewable |
+| [Formulas](formulas.md) | Declarative workflow templates | Reviewable |
 | [Beads](beads.md) | The universal work primitive | In Progress |
 
 ## Also in this directory
