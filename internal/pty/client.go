@@ -132,6 +132,9 @@ func (c *Client) proxy(ctx context.Context, conn *websocket.Conn) error {
 			}
 			if err != nil {
 				if err == io.EOF {
+					// Signal the server that we're done writing.
+					conn.WriteMessage(websocket.CloseMessage, //nolint:errcheck
+						websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 					errCh <- nil
 				} else {
 					errCh <- err
