@@ -105,10 +105,10 @@ func TestNewServer_NegativeCases(t *testing.T) {
 }
 
 // TestHandleConn_EchoBinaryFrame verifies that a WebSocket client can send
-// a binary frame to handleConn and receive the PTY's output back. Uses /bin/cat
-// as the PTY command so input is echoed.
+// a binary frame to handleConn and receive the PTY's output back.
 func TestHandleConn_EchoBinaryFrame(t *testing.T) {
-	s, err := NewServer("/bin/cat", nil, ServerOptions{})
+	// Use a command that echoes then exits, avoiding ptyFile.Read blocking.
+	s, err := NewServer("/bin/sh", []string{"-c", "read line && echo $line"}, ServerOptions{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -127,15 +127,15 @@ func TestHandleConn_EchoBinaryFrame(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Send "hello\n" to PTY via WebSocket.
+	// Send "hello\n" — sh reads one line, echoes it, then exits.
 	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("hello\n")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
-	// Read back — PTY echo includes the input. Read until we see "hello".
+	// Read back until we see "hello" or connection closes (process exited).
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var collected string
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 50; i++ {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			break
@@ -151,7 +151,9 @@ func TestHandleConn_EchoBinaryFrame(t *testing.T) {
 // TestHandleConn_ResizeFrame verifies that sending a resize text frame does
 // not crash the server and the connection remains open.
 func TestHandleConn_ResizeFrame(t *testing.T) {
-	s, err := NewServer("/bin/cat", nil, ServerOptions{})
+	// Use sh that reads two lines — allows us to verify the connection
+	// survives a resize between the two interactions.
+	s, err := NewServer("/bin/sh", []string{"-c", "read a && echo $a && read b && echo $b"}, ServerOptions{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -170,27 +172,46 @@ func TestHandleConn_ResizeFrame(t *testing.T) {
 	}
 	defer conn.Close()
 
+	// Send first line.
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("before\n")); err != nil {
+		t.Fatalf("write before resize: %v", err)
+	}
+
+	// Wait for echo.
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var collected string
+	for i := 0; i < 50; i++ {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		collected += string(data)
+		if strings.Contains(collected, "before") {
+			break
+		}
+	}
+
 	// Send resize text frame.
 	resizeData, _ := EncodeResize(50, 120)
 	if err := conn.WriteMessage(websocket.TextMessage, resizeData); err != nil {
 		t.Fatalf("write resize: %v", err)
 	}
 
-	// Verify connection is still alive by sending/receiving data.
-	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("after-resize\n")); err != nil {
+	// Send second line after resize — verifies connection survived.
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("after\n")); err != nil {
 		t.Fatalf("write after resize: %v", err)
 	}
 
+	collected = ""
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var collected string
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 50; i++ {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			break
 		}
 		collected += string(data)
-		if strings.Contains(collected, "after-resize") {
-			return // success — connection survived the resize
+		if strings.Contains(collected, "after") {
+			return // success
 		}
 	}
 	t.Fatalf("connection died after resize, collected: %q", collected)
