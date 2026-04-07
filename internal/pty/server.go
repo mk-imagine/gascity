@@ -136,12 +136,11 @@ func (s *Server) handleConn(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	var wg sync.WaitGroup
+	done := make(chan struct{}, 2)
 
 	// PTY → WebSocket: read PTY output, tee to ring buffer, send binary frames.
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer func() { done <- struct{}{} }()
 		dst := io.MultiWriter(
 			&wsWriter{conn: conn},
 			buf,
@@ -155,13 +154,11 @@ func (s *Server) handleConn(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// WebSocket → PTY: read client frames, write binary to PTY, handle resize.
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer func() { done <- struct{}{} }()
 		for {
 			msgType, data, err := conn.ReadMessage()
 			if err != nil {
-				// Normal disconnect or close — exit without logging.
 				return
 			}
 			switch msgType {
@@ -186,7 +183,11 @@ func (s *Server) handleConn(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	wg.Wait()
+	// Wait for either goroutine to exit, then close both sides to unblock
+	// the other. PTY EOF → close conn. Client disconnect → close ptyFile
+	// won't work (shared resource), so we close conn to unblock wsWriter.
+	<-done
+	conn.Close()
 }
 
 // wsWriter wraps a *websocket.Conn and implements io.Writer by sending each
