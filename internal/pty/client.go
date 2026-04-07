@@ -158,14 +158,20 @@ func (c *Client) proxy(ctx context.Context, conn *websocket.Conn) error {
 		}
 	}
 
-	// Close conn to unblock the write goroutine.
+	// Close conn to unblock the write goroutine if it's blocked on
+	// WriteMessage. If it's blocked on stdin.Read, closing the conn won't
+	// help — the goroutine is abandoned (acceptable for a CLI tool).
 	conn.Close() //nolint:errcheck
 
-	// Drain the write goroutine result.
-	writeErr := <-errCh
-
-	if writeErr != nil {
-		return fmt.Errorf("proxy write: %w", writeErr)
+	// Best-effort drain of write goroutine result. Don't block forever
+	// because the write goroutine may be stuck on stdin.Read.
+	select {
+	case writeErr := <-errCh:
+		if writeErr != nil {
+			return fmt.Errorf("proxy write: %w", writeErr)
+		}
+	default:
+		// Write goroutine still blocked on stdin — abandoned.
 	}
 	return nil
 }
