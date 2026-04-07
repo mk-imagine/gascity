@@ -99,6 +99,139 @@ func TestNewServer_NegativeCases(t *testing.T) {
 	}
 }
 
+// TestServerStart_SingleLineOutput verifies that start() with a command that
+// produces a single line of output succeeds, and that after the process exits
+// s.buf.Lines() contains that line.
+func TestServerStart_SingleLineOutput(t *testing.T) {
+	s, err := NewServer("/bin/echo", []string{"hello"}, ServerOptions{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := s.start(); err != nil {
+		t.Fatalf("start() returned unexpected error: %v", err)
+	}
+	if err := s.process.Wait(); err != nil {
+		// A non-zero exit is acceptable here; we just need the process to finish.
+		_ = err
+	}
+	lines := s.buf.Lines()
+	if len(lines) == 0 {
+		t.Fatal("start(): buf.Lines() is empty after process exit, want [\"hello\"]")
+	}
+	if lines[0] != "hello" {
+		t.Fatalf("start(): buf.Lines()[0] = %q, want %q", lines[0], "hello")
+	}
+}
+
+// TestServerStart_MultiLineOutput verifies that start() with a shell command
+// that produces two lines stores both lines in s.buf after the process exits.
+func TestServerStart_MultiLineOutput(t *testing.T) {
+	s, err := NewServer("/bin/sh", []string{"-c", "echo line1; echo line2"}, ServerOptions{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := s.start(); err != nil {
+		t.Fatalf("start() returned unexpected error: %v", err)
+	}
+	if err := s.process.Wait(); err != nil {
+		_ = err
+	}
+	lines := s.buf.Lines()
+	if len(lines) < 2 {
+		t.Fatalf("start(): buf.Lines() = %v, want at least [\"line1\", \"line2\"]", lines)
+	}
+	if lines[0] != "line1" {
+		t.Errorf("start(): buf.Lines()[0] = %q, want %q", lines[0], "line1")
+	}
+	if lines[1] != "line2" {
+		t.Errorf("start(): buf.Lines()[1] = %q, want %q", lines[1], "line2")
+	}
+}
+
+// TestServerStart_BadCommand verifies that start() with a nonexistent command
+// returns an error whose message contains "start".
+func TestServerStart_BadCommand(t *testing.T) {
+	s, err := NewServer("/nonexistent/binary", nil, ServerOptions{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	startErr := s.start()
+	if startErr == nil {
+		t.Fatal("start() with nonexistent command returned nil error, want error containing \"start\"")
+	}
+	if !strings.Contains(startErr.Error(), "start") {
+		t.Fatalf("start() error = %q, want message to contain \"start\"", startErr.Error())
+	}
+}
+
+// TestServerStart_AlreadyStarted verifies that calling start() twice without
+// stopping returns an error whose message contains "already".
+func TestServerStart_AlreadyStarted(t *testing.T) {
+	s, err := NewServer("/bin/sh", []string{"-c", "sleep 5"}, ServerOptions{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := s.start(); err != nil {
+		t.Fatalf("first start() returned unexpected error: %v", err)
+	}
+	t.Cleanup(func() {
+		if s.process != nil {
+			_ = s.process.Kill()
+			_ = s.process.Wait()
+		}
+	})
+	secondErr := s.start()
+	if secondErr == nil {
+		t.Fatal("second start() returned nil error, want error containing \"already\"")
+	}
+	if !strings.Contains(secondErr.Error(), "already") {
+		t.Fatalf("second start() error = %q, want message to contain \"already\"", secondErr.Error())
+	}
+}
+
+// TestServerStart_NoOutput verifies that start() with a command that produces
+// no output (/bin/true) succeeds and s.buf.Lines() returns an empty slice after exit.
+func TestServerStart_NoOutput(t *testing.T) {
+	s, err := NewServer("/bin/true", nil, ServerOptions{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := s.start(); err != nil {
+		t.Fatalf("start() returned unexpected error: %v", err)
+	}
+	if err := s.process.Wait(); err != nil {
+		_ = err
+	}
+	lines := s.buf.Lines()
+	if len(lines) != 0 {
+		t.Fatalf("start(): buf.Lines() = %v, want empty slice for /bin/true", lines)
+	}
+}
+
+// TestServerStart_PtyFileNonNil verifies that after a successful start(),
+// s.ptyFile is non-nil.
+func TestServerStart_PtyFileNonNil(t *testing.T) {
+	s, err := NewServer("/bin/sh", []string{"-c", "sleep 5"}, ServerOptions{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := s.start(); err != nil {
+		t.Fatalf("start() returned unexpected error: %v", err)
+	}
+	t.Cleanup(func() {
+		if s.process != nil {
+			_ = s.process.Kill()
+			_ = s.process.Wait()
+		}
+		if s.ptyFile != nil {
+			_ = s.ptyFile.Close()
+		}
+	})
+	if s.ptyFile == nil {
+		t.Fatal("start(): s.ptyFile is nil after successful start, want non-nil")
+	}
+}
+
 // TestNewServer_EdgeCases verifies boundary conditions: empty-but-non-nil args
 // slice is valid, and a BufferLines of 1 (minimum positive value) is accepted.
 func TestNewServer_EdgeCases(t *testing.T) {
