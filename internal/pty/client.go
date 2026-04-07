@@ -8,7 +8,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -100,7 +102,58 @@ func (c *Client) Connect(ctx context.Context) error {
 		}
 	}
 
-	return c.proxy(ctx, conn)
+	proxyCtx, proxyCancel := context.WithCancel(ctx)
+	defer proxyCancel()
+
+	go c.watchResize(proxyCtx, conn)
+
+	return c.proxy(proxyCtx, conn)
+}
+
+// sendResize encodes a terminal resize event and sends it to the server as a
+// WebSocket text frame.
+func sendResize(conn *websocket.Conn, rows, cols uint16) error {
+	data, err := EncodeResize(rows, cols)
+	if err != nil {
+		return err
+	}
+	return conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// watchResize listens for SIGWINCH signals and forwards terminal size changes
+// to the server. It returns immediately if stdin is not an *os.File or if it
+// is not a terminal. The goroutine runs until ctx is cancelled or a write
+// failure occurs.
+func (c *Client) watchResize(ctx context.Context, conn *websocket.Conn) {
+	f, ok := c.stdin.(*os.File)
+	if !ok {
+		return
+	}
+	fd := int(f.Fd())
+	if !term.IsTerminal(fd) {
+		return
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGWINCH)
+	defer signal.Stop(sigCh)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-sigCh:
+			cols, rows, err := term.GetSize(fd)
+			if err != nil {
+				c.logger.Printf("pty: failed to get terminal size: %v", err)
+				continue
+			}
+			if err := sendResize(conn, uint16(rows), uint16(cols)); err != nil {
+				c.logger.Printf("pty: failed to send resize: %v", err)
+				return
+			}
+		}
+	}
 }
 
 // proxy copies data bidirectionally between conn and the client's stdin/stdout.
