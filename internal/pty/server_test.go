@@ -118,7 +118,9 @@ func TestServerStart_SingleLineOutput(t *testing.T) {
 	if len(lines) == 0 {
 		t.Fatal("start(): buf.Lines() is empty after process exit, want [\"hello\"]")
 	}
-	if lines[0] != "hello" {
+	// PTY output includes \r (carriage return) — strip for comparison.
+	got := strings.TrimRight(lines[0], "\r")
+	if got != "hello" {
 		t.Fatalf("start(): buf.Lines()[0] = %q, want %q", lines[0], "hello")
 	}
 }
@@ -140,10 +142,11 @@ func TestServerStart_MultiLineOutput(t *testing.T) {
 	if len(lines) < 2 {
 		t.Fatalf("start(): buf.Lines() = %v, want at least [\"line1\", \"line2\"]", lines)
 	}
-	if lines[0] != "line1" {
+	// PTY output includes \r — strip for comparison.
+	if got := strings.TrimRight(lines[0], "\r"); got != "line1" {
 		t.Errorf("start(): buf.Lines()[0] = %q, want %q", lines[0], "line1")
 	}
-	if lines[1] != "line2" {
+	if got := strings.TrimRight(lines[1], "\r"); got != "line2" {
 		t.Errorf("start(): buf.Lines()[1] = %q, want %q", lines[1], "line2")
 	}
 }
