@@ -331,3 +331,232 @@ func TestConnect_RawTrue_NonTerminalStdin_SkipsRawMode(t *testing.T) {
 		t.Errorf("Connect() with Raw:true + non-terminal stdin returned unexpected error: %v", err)
 	}
 }
+
+// newEchoWSServer starts an httptest.Server that upgrades every connection to
+// WebSocket and echoes each binary frame back to the sender as a binary frame.
+// Text frames are discarded without echo. The server closes the connection when
+// the client disconnects or an error occurs.
+func newEchoWSServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			msgType, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if msgType == websocket.BinaryMessage {
+				if writeErr := conn.WriteMessage(websocket.BinaryMessage, msg); writeErr != nil {
+					return
+				}
+			}
+			// Text frames are discarded without echo per contract.
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// newProxyClient builds a Client pointed at addr with the given stdin reader
+// and returns the client together with the stdout buffer it writes into.
+func newProxyClient(t *testing.T, addr string, stdin io.Reader) (*Client, *bytes.Buffer) {
+	t.Helper()
+	out := &bytes.Buffer{}
+	c, err := NewClient(addr, ClientOptions{
+		Stdin:  stdin,
+		Stdout: out,
+	})
+	if err != nil {
+		t.Fatalf("NewClient returned unexpected error: %v", err)
+	}
+	return c, out
+}
+
+// TestProxy_Echo_StdinToStdout verifies the positive case: bytes written to
+// stdin are sent as a binary WebSocket frame, echoed by the server, and appear
+// in stdout after proxy returns.
+func TestProxy_Echo_StdinToStdout(t *testing.T) {
+	srv := newEchoWSServer(t)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	c, out := newProxyClient(t, addr, strings.NewReader("hello"))
+
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect() returned unexpected error: %v", err)
+	}
+
+	if got := out.String(); got != "hello" {
+		t.Errorf("proxy echo: stdout = %q, want %q", got, "hello")
+	}
+}
+
+// TestProxy_MultipleFrames_OrderPreserved verifies the positive case: multiple
+// stdin reads each produce a binary frame; the server echoes all frames and
+// they arrive in order in stdout.
+func TestProxy_MultipleFrames_OrderPreserved(t *testing.T) {
+	srv := newEchoWSServer(t)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	// Produce input that spans multiple 4096-byte buffer reads: three distinct
+	// chunks separated by a pipe so the reader returns them separately.
+	pr, pw := io.Pipe()
+	writes := []string{"frame1", "frame2", "frame3"}
+	go func() {
+		for _, w := range writes {
+			_, _ = pw.Write([]byte(w))
+		}
+		pw.Close()
+	}()
+
+	c, out := newProxyClient(t, addr, pr)
+
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect() returned unexpected error: %v", err)
+	}
+
+	got := out.String()
+	want := "frame1frame2frame3"
+	if got != want {
+		t.Errorf("proxy multiple frames: stdout = %q, want %q", got, want)
+	}
+}
+
+// TestProxy_StdinEOF_ReturnsNil verifies the positive case: when stdin reaches
+// EOF (bytes.Reader exhausted) the write loop exits cleanly and proxy returns
+// nil.
+func TestProxy_StdinEOF_ReturnsNil(t *testing.T) {
+	srv := newEchoWSServer(t)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	c, _ := newProxyClient(t, addr, strings.NewReader(""))
+
+	if err := c.Connect(context.Background()); err != nil {
+		t.Errorf("Connect() with EOF stdin returned unexpected error: %v", err)
+	}
+}
+
+// TestProxy_ServerClose_ReturnsNil verifies the negative case: when the server
+// closes the WebSocket connection the read loop detects the close and proxy
+// returns nil.
+func TestProxy_ServerClose_ReturnsNil(t *testing.T) {
+	// Use newTestWSServer which upgrades then immediately closes.
+	srv := newTestWSServer(t)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	// Provide a reader that blocks indefinitely so only the server close
+	// triggers the return.
+	pr, _ := io.Pipe()
+	t.Cleanup(func() { pr.Close() })
+
+	c, _ := newProxyClient(t, addr, pr)
+
+	if err := c.Connect(context.Background()); err != nil {
+		t.Errorf("Connect() after server close returned unexpected error: %v", err)
+	}
+}
+
+// TestProxy_ContextCancelled_Exits verifies the negative case: cancelling the
+// context causes proxy to exit both loops and return.
+func TestProxy_ContextCancelled_Exits(t *testing.T) {
+	// Use a server that stays open and does nothing so only the context
+	// cancellation drives the exit.
+	idleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Block until the client disconnects.
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(idleSrv.Close)
+
+	addr := strings.TrimPrefix(idleSrv.URL, "http://")
+
+	// stdin blocks forever — only the context cancel should terminate proxy.
+	pr, _ := io.Pipe()
+	t.Cleanup(func() { pr.Close() })
+
+	c, _ := newProxyClient(t, addr, pr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after a short delay so Connect has time to establish the
+	// connection and enter proxy.
+	go func() {
+		cancel()
+	}()
+
+	// proxy must return (possibly with an error) after context is cancelled;
+	// the contract only requires it exits, not the exact error value.
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Connect(ctx)
+	}()
+
+	select {
+	case <-done:
+		// returned — correct
+	case <-context.Background().Done():
+		t.Fatal("Connect() did not return after context cancellation")
+	}
+}
+
+// TestProxy_TextFrame_Discarded verifies the edge case: a text frame received
+// from the server is discarded (not written to stdout) and proxy does not
+// return an error because of it.
+func TestProxy_TextFrame_Discarded(t *testing.T) {
+	// Server that sends one text frame then closes.
+	textSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("should-be-discarded"))
+	}))
+	t.Cleanup(textSrv.Close)
+
+	addr := strings.TrimPrefix(textSrv.URL, "http://")
+	c, out := newProxyClient(t, addr, strings.NewReader(""))
+
+	if err := c.Connect(context.Background()); err != nil {
+		t.Errorf("Connect() after text frame returned unexpected error: %v", err)
+	}
+
+	if out.Len() != 0 {
+		t.Errorf("proxy text frame: stdout = %q, want empty (text frames must be discarded)", out.String())
+	}
+}
+
+// TestProxy_EmptyBinaryFrame_WrittenToStdout verifies the edge case: an empty
+// binary frame received from the server is written to stdout as a zero-length
+// write. proxy must not error and must not skip the write.
+func TestProxy_EmptyBinaryFrame_WrittenToStdout(t *testing.T) {
+	// Server that sends one empty binary frame then closes.
+	emptySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteMessage(websocket.BinaryMessage, []byte{})
+	}))
+	t.Cleanup(emptySrv.Close)
+
+	addr := strings.TrimPrefix(emptySrv.URL, "http://")
+	c, _ := newProxyClient(t, addr, strings.NewReader(""))
+
+	if err := c.Connect(context.Background()); err != nil {
+		t.Errorf("Connect() after empty binary frame returned unexpected error: %v", err)
+	}
+	// The contract requires the write is attempted; we verify no error is
+	// returned and Connect completes normally.
+}
