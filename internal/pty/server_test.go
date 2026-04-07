@@ -176,8 +176,8 @@ func TestServerStart_AlreadyStarted(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if s.process != nil {
-			_ = s.process.Kill()
-			_ = s.process.Wait()
+			_ = s.process.Process.Kill()
+			_, _ = s.process.Process.Wait()
 		}
 	})
 	secondErr := s.start()
@@ -220,8 +220,8 @@ func TestServerStart_PtyFileNonNil(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if s.process != nil {
-			_ = s.process.Kill()
-			_ = s.process.Wait()
+			_ = s.process.Process.Kill()
+			_, _ = s.process.Process.Wait()
 		}
 		if s.ptyFile != nil {
 			_ = s.ptyFile.Close()
