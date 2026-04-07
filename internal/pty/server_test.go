@@ -4,8 +4,13 @@ package pty
 
 import (
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // TestNewServer_PositiveCases verifies that NewServer returns a non-nil *Server
@@ -99,56 +104,96 @@ func TestNewServer_NegativeCases(t *testing.T) {
 	}
 }
 
-// TestServerStart_SingleLineOutput verifies that start() with a command that
-// produces a single line of output succeeds, and that after the process exits
-// s.buf.Lines() contains that line.
-func TestServerStart_SingleLineOutput(t *testing.T) {
-	s, err := NewServer("/bin/echo", []string{"hello"}, ServerOptions{})
+// TestHandleConn_EchoBinaryFrame verifies that a WebSocket client can send
+// a binary frame to handleConn and receive the PTY's output back. Uses /bin/cat
+// as the PTY command so input is echoed.
+func TestHandleConn_EchoBinaryFrame(t *testing.T) {
+	s, err := NewServer("/bin/cat", nil, ServerOptions{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 	if err := s.start(); err != nil {
-		t.Fatalf("start() returned unexpected error: %v", err)
+		t.Fatalf("start: %v", err)
 	}
-	if err := s.process.Wait(); err != nil {
-		// A non-zero exit is acceptable here; we just need the process to finish.
-		_ = err
+	t.Cleanup(func() { s.stop() })
+
+	srv := httptest.NewServer(http.HandlerFunc(s.handleConn))
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
 	}
-	lines := s.buf.Lines()
-	if len(lines) == 0 {
-		t.Fatal("start(): buf.Lines() is empty after process exit, want [\"hello\"]")
+	defer conn.Close()
+
+	// Send "hello\n" to PTY via WebSocket.
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("hello\n")); err != nil {
+		t.Fatalf("write: %v", err)
 	}
-	// PTY output includes \r (carriage return) — strip for comparison.
-	got := strings.TrimRight(lines[0], "\r")
-	if got != "hello" {
-		t.Fatalf("start(): buf.Lines()[0] = %q, want %q", lines[0], "hello")
+
+	// Read back — PTY echo includes the input. Read until we see "hello".
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var collected string
+	for i := 0; i < 20; i++ {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		collected += string(data)
+		if strings.Contains(collected, "hello") {
+			return // success
+		}
 	}
+	t.Fatalf("did not receive echo of 'hello' in PTY output, got: %q", collected)
 }
 
-// TestServerStart_MultiLineOutput verifies that start() with a shell command
-// that produces two lines stores both lines in s.buf after the process exits.
-func TestServerStart_MultiLineOutput(t *testing.T) {
-	s, err := NewServer("/bin/sh", []string{"-c", "echo line1; echo line2"}, ServerOptions{})
+// TestHandleConn_ResizeFrame verifies that sending a resize text frame does
+// not crash the server and the connection remains open.
+func TestHandleConn_ResizeFrame(t *testing.T) {
+	s, err := NewServer("/bin/cat", nil, ServerOptions{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 	if err := s.start(); err != nil {
-		t.Fatalf("start() returned unexpected error: %v", err)
+		t.Fatalf("start: %v", err)
 	}
-	if err := s.process.Wait(); err != nil {
-		_ = err
+	t.Cleanup(func() { s.stop() })
+
+	srv := httptest.NewServer(http.HandlerFunc(s.handleConn))
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
 	}
-	lines := s.buf.Lines()
-	if len(lines) < 2 {
-		t.Fatalf("start(): buf.Lines() = %v, want at least [\"line1\", \"line2\"]", lines)
+	defer conn.Close()
+
+	// Send resize text frame.
+	resizeData, _ := EncodeResize(50, 120)
+	if err := conn.WriteMessage(websocket.TextMessage, resizeData); err != nil {
+		t.Fatalf("write resize: %v", err)
 	}
-	// PTY output includes \r — strip for comparison.
-	if got := strings.TrimRight(lines[0], "\r"); got != "line1" {
-		t.Errorf("start(): buf.Lines()[0] = %q, want %q", lines[0], "line1")
+
+	// Verify connection is still alive by sending/receiving data.
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("after-resize\n")); err != nil {
+		t.Fatalf("write after resize: %v", err)
 	}
-	if got := strings.TrimRight(lines[1], "\r"); got != "line2" {
-		t.Errorf("start(): buf.Lines()[1] = %q, want %q", lines[1], "line2")
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var collected string
+	for i := 0; i < 20; i++ {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		collected += string(data)
+		if strings.Contains(collected, "after-resize") {
+			return // success — connection survived the resize
+		}
 	}
+	t.Fatalf("connection died after resize, collected: %q", collected)
 }
 
 // TestServerStart_BadCommand verifies that start() with a nonexistent command
