@@ -6,6 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"os/exec"
+	"sync"
+
+	"github.com/creack/pty"
 )
 
 // ServerOptions configures a PTY server. Zero values are valid: BufferLines
@@ -22,6 +27,11 @@ type Server struct {
 	args        []string
 	bufferLines int
 	logger      *log.Logger
+
+	mu      sync.Mutex
+	ptyFile *os.File
+	process *exec.Cmd
+	buf     *RingBuffer
 }
 
 // NewServer creates a Server that will run the given command with args when
@@ -46,4 +56,51 @@ func NewServer(cmd string, args []string, opts ServerOptions) (*Server, error) {
 		bufferLines: opts.BufferLines,
 		logger:      opts.Logger,
 	}, nil
+}
+
+// start creates a PTY, execs the configured command, and begins copying PTY
+// output to the ring buffer. Returns an error if the server is already running
+// or if the PTY cannot be created.
+func (s *Server) start() error {
+	s.mu.Lock()
+	if s.ptyFile != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("starting server: already running")
+	}
+	s.mu.Unlock()
+
+	cmd := exec.Command(s.cmd, s.args...)
+	f, err := pty.Start(cmd)
+	if err != nil {
+		return fmt.Errorf("starting server: %w", err)
+	}
+
+	s.mu.Lock()
+	s.ptyFile = f
+	s.process = cmd
+	s.buf = NewRingBuffer(s.bufferLines)
+	s.mu.Unlock()
+
+	go func() {
+		io.Copy(s.buf, f) //nolint:errcheck
+	}()
+
+	return nil
+}
+
+// stop closes the PTY and waits for the subprocess to exit.
+func (s *Server) stop() error {
+	s.mu.Lock()
+	f := s.ptyFile
+	proc := s.process
+	s.ptyFile = nil
+	s.mu.Unlock()
+
+	if f != nil {
+		f.Close()
+	}
+	if proc != nil {
+		proc.Wait() //nolint:errcheck
+	}
+	return nil
 }
