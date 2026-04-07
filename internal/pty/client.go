@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
@@ -102,8 +103,66 @@ func (c *Client) Connect(ctx context.Context) error {
 	return c.proxy(ctx, conn)
 }
 
-// proxy is a stub that will be implemented in a subsequent packet to copy data
-// bidirectionally between conn and the client's stdin/stdout.
+// proxy copies data bidirectionally between conn and the client's stdin/stdout.
+// It starts a write goroutine that reads from stdin and sends binary frames to
+// the server, and an inline read loop that receives frames from the server and
+// writes binary frames to stdout (discarding text frames). When the context is
+// cancelled a read deadline is set to unblock the read loop. After the read
+// loop exits conn is closed to unblock the write goroutine. proxy returns nil
+// on a clean close.
 func (c *Client) proxy(ctx context.Context, conn *websocket.Conn) error {
+	errCh := make(chan error, 1)
+
+	// Context watcher: unblock the read loop when the context is cancelled.
+	go func() {
+		<-ctx.Done()
+		conn.SetReadDeadline(time.Now()) //nolint:errcheck
+	}()
+
+	// Write goroutine: read stdin and send binary frames to the server.
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := c.stdin.Read(buf)
+			if n > 0 {
+				if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
+					errCh <- werr
+					return
+				}
+			}
+			if err != nil {
+				if err == io.EOF {
+					errCh <- nil
+				} else {
+					errCh <- err
+				}
+				return
+			}
+		}
+	}()
+
+	// Read loop: receive frames from the server and write binary frames to stdout.
+	for {
+		msgType, data, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		switch msgType {
+		case websocket.BinaryMessage:
+			c.stdout.Write(data) //nolint:errcheck
+		case websocket.TextMessage:
+			c.logger.Printf("pty: discarding text frame (%d bytes)", len(data))
+		}
+	}
+
+	// Close conn to unblock the write goroutine.
+	conn.Close() //nolint:errcheck
+
+	// Drain the write goroutine result.
+	writeErr := <-errCh
+
+	if writeErr != nil {
+		return fmt.Errorf("proxy write: %w", writeErr)
+	}
 	return nil
 }
