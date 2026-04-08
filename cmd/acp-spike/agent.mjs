@@ -36,6 +36,8 @@ for (let i = 0; i < prompts.length; i++) {
   const options = {
     allowedTools: [],
     permissionMode: "dontAsk",
+    debug: true,
+    stderr: (data) => process.stderr.write(`[claude-stderr] ${data}`),
   };
 
   if (sessionId) {
