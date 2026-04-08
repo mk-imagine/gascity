@@ -33,14 +33,6 @@ for (let i = 0; i < prompts.length; i++) {
   console.log(`\n━━━ Prompt ${i + 1}/${prompts.length} ━━━`);
   console.log(`> ${prompt}\n`);
 
-  // Build options for this turn.
-  //
-  // - permissionMode "dontAsk": denies any tool not in allowedTools,
-  //   no interactive prompts. Perfect for headless containers.
-  // - allowedTools []: no tools needed for simple text responses.
-  //   The agent can only reply with text, not call tools.
-  // - resume: continues the same session so Claude has context from
-  //   prior turns. On the first turn, sessionId is undefined (new session).
   const options = {
     allowedTools: [],
     permissionMode: "dontAsk",
@@ -50,36 +42,43 @@ for (let i = 0; i < prompts.length; i++) {
     options.resume = sessionId;
   }
 
-  // query() returns an async generator that streams messages as Claude
-  // works. Message types:
-  //   - system (subtype: init)  — session ID, tools, model info
-  //   - assistant               — Claude's response (text + tool calls)
-  //   - result                  — final outcome with cost/usage
-  for await (const message of query({ prompt, options })) {
-    // Debug: log every message type so we can see what the SDK emits.
-    console.error(`[debug] message.type=${message.type} subtype=${message.subtype ?? "-"}`);
+  console.log("[debug] calling query()...");
+  let messageCount = 0;
 
-    // Capture session ID from init or result for resume.
-    if (message.type === "system" && message.subtype === "init") {
-      sessionId = message.session_id;
-      console.error(`[debug] session_id=${sessionId}`);
-    }
+  try {
+    const q = query({ prompt, options });
+    console.log("[debug] query object created, iterating...");
 
-    // Print Claude's text response.
-    if (message.type === "assistant" && message.message?.content) {
-      for (const block of message.message.content) {
-        if ("text" in block) {
-          process.stdout.write(block.text);
+    for await (const message of q) {
+      messageCount++;
+      console.log(`[debug] message #${messageCount}: type=${message.type} subtype=${message.subtype ?? "-"}`);
+
+      // Capture session ID.
+      if (message.type === "system" && message.subtype === "init") {
+        sessionId = message.session_id;
+      }
+
+      // Print Claude's text response.
+      if (message.type === "assistant" && message.message?.content) {
+        for (const block of message.message.content) {
+          if ("text" in block) {
+            process.stdout.write(block.text);
+          }
         }
+      }
+
+      // Print result summary.
+      if (message.type === "result") {
+        sessionId = message.session_id;
+        const cost = message.total_cost_usd?.toFixed(4) ?? "?";
+        console.log(`\n[${message.subtype}, cost: $${cost}]`);
       }
     }
 
-    // Print result summary.
-    if (message.type === "result") {
-      sessionId = message.session_id;
-      const cost = message.total_cost_usd?.toFixed(4) ?? "?";
-      console.log(`\n[${message.subtype}, cost: $${cost}]`);
-    }
+    console.log(`[debug] query done, ${messageCount} messages received`);
+  } catch (err) {
+    console.error(`[error] query failed: ${err.message}`);
+    console.error(err.stack);
   }
 }
 
