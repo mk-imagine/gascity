@@ -56,9 +56,13 @@ for (let i = 0; i < prompts.length; i++) {
   //   - assistant               — Claude's response (text + tool calls)
   //   - result                  — final outcome with cost/usage
   for await (const message of query({ prompt, options })) {
+    // Debug: log every message type so we can see what the SDK emits.
+    console.error(`[debug] message.type=${message.type} subtype=${message.subtype ?? "-"}`);
+
     // Capture session ID from init or result for resume.
     if (message.type === "system" && message.subtype === "init") {
       sessionId = message.session_id;
+      console.error(`[debug] session_id=${sessionId}`);
     }
 
     // Print Claude's text response.
