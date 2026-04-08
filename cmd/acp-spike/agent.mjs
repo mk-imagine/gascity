@@ -36,26 +36,15 @@ for (let i = 0; i < prompts.length; i++) {
   const options = {
     allowedTools: [],
     permissionMode: "dontAsk",
-    debug: true,
-    stderr: (data) => process.stderr.write(`[claude-stderr] ${data}`),
   };
 
   if (sessionId) {
     options.resume = sessionId;
   }
 
-  console.log("[debug] calling query()...");
-  let messageCount = 0;
-
   try {
-    const q = query({ prompt, options });
-    console.log("[debug] query object created, iterating...");
-
-    for await (const message of q) {
-      messageCount++;
-      console.log(`[debug] message #${messageCount}: type=${message.type} subtype=${message.subtype ?? "-"}`);
-
-      // Capture session ID.
+    for await (const message of query({ prompt, options })) {
+      // Capture session ID for resume.
       if (message.type === "system" && message.subtype === "init") {
         sessionId = message.session_id;
       }
@@ -76,11 +65,8 @@ for (let i = 0; i < prompts.length; i++) {
         console.log(`\n[${message.subtype}, cost: $${cost}]`);
       }
     }
-
-    console.log(`[debug] query done, ${messageCount} messages received`);
   } catch (err) {
     console.error(`[error] query failed: ${err.message}`);
-    console.error(err.stack);
   }
 }
 
