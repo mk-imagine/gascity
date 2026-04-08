@@ -55,6 +55,17 @@ func main() {
 		}
 	}
 
+	// Create a temp directory for session persistence across container runs.
+	// Each `docker run --rm` destroys the container filesystem, but sessions
+	// are stored at ~/.claude/projects/. By mounting a host directory there,
+	// sessions survive across runs and --resume works.
+	sessionDir, err := os.MkdirTemp("", "gc-spike-sessions-*")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.RemoveAll(sessionDir)
+	log.Printf("session dir: %s", sessionDir)
+
 	prompts := []string{
 		"Remember the number 42. Just say OK.",
 		"What number did I ask you to remember? Answer with just the number.",
@@ -66,7 +77,7 @@ func main() {
 	for i, prompt := range prompts {
 		fmt.Printf("\n━━━ Prompt %d/%d ━━━\n> %s\n\n", i+1, len(prompts), prompt)
 
-		result, err := runClaude(prompt, sessionID, creds, settings, topCfg)
+		result, err := runClaude(prompt, sessionID, sessionDir, creds, settings, topCfg)
 		if err != nil {
 			log.Fatalf("prompt %d: %v", i+1, err)
 		}
@@ -89,7 +100,7 @@ func main() {
 //  2. Append --resume <id> for multi-turn
 //  3. Capture stdout (JSON result)
 //  4. Parse and return
-func runClaude(prompt, sessionID, creds, settings, topCfg string) (*claudeResult, error) {
+func runClaude(prompt, sessionID, sessionDir, creds, settings, topCfg string) (*claudeResult, error) {
 	// Build the docker run command.
 	args := []string{
 		"run", "--rm",
@@ -97,6 +108,10 @@ func runClaude(prompt, sessionID, creds, settings, topCfg string) (*claudeResult
 		"-v", creds + ":/root/.claude/.credentials.json:ro",
 		"-v", settings + ":/root/.claude/settings.json:ro",
 		"-v", topCfg + ":/root/.claude.json:ro",
+		// Session persistence: mount host temp dir so sessions survive
+		// across container runs. Without this, --resume fails because
+		// each container has a fresh filesystem.
+		"-v", sessionDir + ":/root/.claude/projects",
 		// Override entrypoint to call claude directly.
 		"--entrypoint", "claude",
 		imageName,
