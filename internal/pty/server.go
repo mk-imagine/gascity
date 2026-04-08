@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -230,14 +231,44 @@ func (s *Server) handleConn(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{}, 2)
 
 	// PTY → WebSocket: read PTY output, tee to ring buffer, send binary frames.
+	// Also intercepts terminal capability queries (DA1, XTVERSION) from the
+	// child process and injects synthetic responses into the PTY stdin. This
+	// is necessary because TUI applications (e.g., Claude Code's Ink renderer)
+	// block at startup waiting for terminal capability responses that would
+	// normally come from the terminal emulator.
 	go func() {
 		defer func() { done <- struct{}{} }()
 		dst := io.MultiWriter(
 			&wsWriter{conn: conn},
 			buf,
 		)
-		if _, err := io.Copy(dst, ptyFile); err != nil {
-			s.logger.Printf("pty: PTY read error: %v", err)
+		// Use a scanning copy to intercept terminal queries.
+		readBuf := make([]byte, 4096)
+		for {
+			n, err := ptyFile.Read(readBuf)
+			if n > 0 {
+				chunk := string(readBuf[:n])
+				// Respond to DA1 query: \x1b[c
+				if strings.Contains(chunk, "\x1b[c") {
+					// VT220 response: "I support 132-column mode"
+					ptyFile.Write([]byte("\x1b[?62;4c")) //nolint:errcheck
+				}
+				// Respond to XTVERSION query: \x1b[>0q
+				if strings.Contains(chunk, "\x1b[>0q") {
+					// Fake xterm version response
+					ptyFile.Write([]byte("\x1bP>|gc-pty-bridge(1.0)\x1b\\")) //nolint:errcheck
+				}
+				if _, werr := dst.Write(readBuf[:n]); werr != nil {
+					s.logger.Printf("pty: write to client: %v", werr)
+					break
+				}
+			}
+			if err != nil {
+				if err != io.EOF {
+					s.logger.Printf("pty: PTY read error: %v", err)
+				}
+				break
+			}
 		}
 		// PTY reached EOF — signal client to close.
 		_ = conn.WriteMessage(websocket.CloseMessage,
