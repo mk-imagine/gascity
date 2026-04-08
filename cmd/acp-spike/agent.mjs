@@ -13,9 +13,9 @@
 // Usage:
 //   docker build -t gc-acp-spike -f cmd/acp-spike/Dockerfile cmd/acp-spike/
 //   docker run --rm \
-//     -v ~/.claude/.credentials.json:/home/node/.claude/.credentials.json:ro \
-//     -v ~/.claude/settings.json:/home/node/.claude/settings.json:ro \
-//     -v ~/.claude.json:/home/node/.claude.json:ro \
+//     -v ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro \
+//     -v ~/.claude/settings.json:/root/.claude/settings.json:ro \
+//     -v ~/.claude.json:/root/.claude.json:ro \
 //     gc-acp-spike
 
 import { query } from "@anthropic-ai/claude-agent-sdk";

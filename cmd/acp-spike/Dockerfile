@@ -8,9 +8,9 @@
 #
 # Run (OAuth credentials from host):
 #   docker run --rm \
-#     -v ~/.claude/.credentials.json:/home/node/.claude/.credentials.json:ro \
-#     -v ~/.claude/settings.json:/home/node/.claude/settings.json:ro \
-#     -v ~/.claude.json:/home/node/.claude.json:ro \
+#     -v ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro \
+#     -v ~/.claude/settings.json:/root/.claude/settings.json:ro \
+#     -v ~/.claude.json:/root/.claude.json:ro \
 #     gc-acp-spike
 
 FROM node:20-slim
@@ -23,12 +23,9 @@ RUN npm install --omit=dev 2>/dev/null
 
 COPY agent.mjs .
 
-# node:20-slim ships with a 'node' user (UID 1000).
-# Run as non-root so Claude Code's permission modes work correctly
-# (bypassPermissions is blocked for root).
-# Ensure .claude dir exists for session persistence.
-RUN mkdir -p /home/node/.claude && chown node:node /home/node/.claude
-
-USER node
+# Run as root for now. The Agent SDK's Claude Code subprocess needs
+# credentials at $HOME/.claude/, and non-root users hit credential
+# discovery issues in containers. Use permissionMode "dontAsk" (not
+# "bypassPermissions" which is blocked for root).
 
 ENTRYPOINT ["node", "agent.mjs"]
