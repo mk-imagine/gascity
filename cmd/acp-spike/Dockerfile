@@ -17,7 +17,9 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# Install the Agent SDK (includes bundled Claude Code CLI).
+# Install Claude Code globally (for direct CLI use in tests)
+# and the Agent SDK as a project dependency.
+RUN npm install -g @anthropic-ai/claude-code 2>/dev/null
 COPY package.json .
 RUN npm install --omit=dev 2>/dev/null
 
