@@ -3,13 +3,16 @@
 package pty
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	cpty "github.com/creack/pty"
 	"github.com/gorilla/websocket"
@@ -31,10 +34,12 @@ type Server struct {
 	logger      *log.Logger
 	upgrader    websocket.Upgrader
 
-	mu      sync.Mutex
-	ptyFile *os.File
-	process *exec.Cmd
-	buf     *RingBuffer
+	mu       sync.Mutex
+	ptyFile  *os.File
+	process  *exec.Cmd
+	buf      *RingBuffer
+	listener net.Listener
+	done     chan struct{} // closed when PTY process exits
 }
 
 // NewServer creates a Server that will run the given command with args when
@@ -105,6 +110,92 @@ func (s *Server) stop() error {
 		proc.Wait() //nolint:errcheck
 	}
 	return nil
+}
+
+// ListenAndServe starts the PTY process, binds an HTTP server on the given
+// address, and blocks until either the context is cancelled or the PTY process
+// exits. On either event, the HTTP server is shut down gracefully and the PTY
+// is cleaned up. Use ":0" for addr to bind to a random available port; call
+// Addr() after ListenAndServe starts to discover the actual address.
+func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if err := s.start(); err != nil {
+		return err
+	}
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		s.stop() //nolint:errcheck
+		return fmt.Errorf("listening on %s: %w", addr, err)
+	}
+
+	s.mu.Lock()
+	s.listener = ln
+	s.done = make(chan struct{})
+	s.mu.Unlock()
+
+	// Watch for process exit.
+	go func() {
+		if s.process != nil {
+			s.process.Wait() //nolint:errcheck
+		}
+		s.mu.Lock()
+		done := s.done
+		s.mu.Unlock()
+		if done != nil {
+			close(done)
+		}
+	}()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleConn)
+
+	httpServer := &http.Server{Handler: mux}
+
+	// Serve in a goroutine.
+	serveErr := make(chan error, 1)
+	go func() {
+		if err := httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			serveErr <- err
+		}
+		close(serveErr)
+	}()
+
+	// Wait for shutdown trigger.
+	select {
+	case <-ctx.Done():
+	case <-s.done:
+	case err := <-serveErr:
+		s.stop() //nolint:errcheck
+		return err
+	}
+
+	// Graceful shutdown.
+	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	httpServer.Shutdown(shutCtx) //nolint:errcheck
+
+	s.stop() //nolint:errcheck
+
+	s.mu.Lock()
+	s.listener = nil
+	s.mu.Unlock()
+
+	return nil
+}
+
+// Addr returns the address the server is listening on, or an empty string if
+// the server is not currently listening.
+func (s *Server) Addr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
+	return ""
 }
 
 // handleConn upgrades an HTTP request to a WebSocket connection and proxies
