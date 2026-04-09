@@ -1,16 +1,15 @@
-// Transport layer: V1 query() + resume for multi-turn conversation.
+// Transport layer: V2 persistent session for multi-turn conversation.
 //
-// Each turn spawns a new Claude Code subprocess via the Agent SDK.
-// The session ID is captured from the first turn and passed to
-// subsequent turns via --resume for conversation continuity.
+// Uses unstable_v2_createSession() to keep a single Claude Code process
+// alive across all turns. send() + stream() per turn — no subprocess
+// startup overhead after the first turn.
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
 
 export class MayorTransport {
   constructor(options = {}) {
+    this.session = null;
     this.sessionId = null;
-    // Start with minimal options that are known to work with OAuth.
-    // The earlier agent.mjs spike validated this exact combination.
     this.options = {
       permissionMode: options.permissionMode ?? "dontAsk",
       allowedTools: options.allowedTools ?? [],
@@ -18,26 +17,34 @@ export class MayorTransport {
     };
   }
 
-  // Send a prompt and yield messages as they stream back.
-  // The caller iterates with: for await (const msg of transport.send(text))
-  async *send(prompt) {
-    const opts = { ...this.options };
-    if (this.sessionId) {
-      opts.resume = this.sessionId;
+  // Lazily create the session on first send.
+  _ensureSession() {
+    if (!this.session) {
+      this.session = unstable_v2_createSession(this.options);
+      this.sessionId = this.session.sessionId;
     }
+  }
 
-    const q = query({ prompt, options: opts });
+  // Send a prompt and yield messages as they stream back.
+  async *send(prompt) {
+    this._ensureSession();
 
-    for await (const message of q) {
-      // Capture session ID from init or result.
-      if (message.type === "system" && message.subtype === "init") {
-        this.sessionId = message.session_id;
-      }
-      if (message.type === "result" && message.session_id) {
+    await this.session.send(prompt);
+
+    for await (const message of this.session.stream()) {
+      // Capture session ID from any message that has it.
+      if (message.session_id) {
         this.sessionId = message.session_id;
       }
 
       yield message;
+    }
+  }
+
+  close() {
+    if (this.session) {
+      this.session.close();
+      this.session = null;
     }
   }
 }
