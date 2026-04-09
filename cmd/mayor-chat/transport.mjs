@@ -21,7 +21,7 @@ export class MayorTransport {
   _ensureSession() {
     if (!this.session) {
       this.session = unstable_v2_createSession(this.options);
-      this.sessionId = this.session.sessionId;
+      // sessionId is not available until after first stream() yields.
     }
   }
 

@@ -32,6 +32,7 @@ function Chat() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("ready");
+  const [sessionId, setSessionId] = useState(null);
   const transportRef = useRef(null);
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -69,6 +70,11 @@ function Chat() {
 
     try {
       for await (const msg of transportRef.current.send(trimmed)) {
+        // Capture session ID from any message.
+        if (msg.session_id && !sessionId) {
+          setSessionId(msg.session_id);
+        }
+
         if (msg.type === "assistant" && msg.message?.content) {
           // Accumulate text from assistant content blocks.
           let text = "";
@@ -171,8 +177,8 @@ function Chat() {
               " ",
               status
             )
-          : transportRef.current?.sessionId
-            ? `session: ${transportRef.current.sessionId.slice(0, 8)}...`
+          : sessionId
+            ? `session: ${sessionId.slice(0, 8)}...`
             : "new session"
       )
     ),
