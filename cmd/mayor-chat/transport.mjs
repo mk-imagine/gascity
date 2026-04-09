@@ -13,6 +13,7 @@ export class MayorTransport {
     this.options = {
       permissionMode: options.permissionMode ?? "dontAsk",
       allowedTools: options.allowedTools ?? [],
+      includePartialMessages: true,
       ...options,
     };
   }
