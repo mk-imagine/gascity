@@ -9,13 +9,11 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 export class MayorTransport {
   constructor(options = {}) {
     this.sessionId = null;
+    // Start with minimal options that are known to work with OAuth.
+    // The earlier agent.mjs spike validated this exact combination.
     this.options = {
       permissionMode: options.permissionMode ?? "dontAsk",
-      allowedTools: options.allowedTools ?? [
-        "Read", "Edit", "Write", "Bash", "Glob", "Grep",
-        "WebSearch", "WebFetch", "Agent",
-      ],
-      includePartialMessages: options.includePartialMessages ?? true,
+      allowedTools: options.allowedTools ?? [],
       ...options,
     };
   }
