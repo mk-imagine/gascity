@@ -70,6 +70,9 @@ function Chat() {
 
     try {
       for await (const msg of transportRef.current.send(trimmed)) {
+        // Debug: log every message type to stderr.
+        process.stderr.write(`[msg] type=${msg.type} subtype=${msg.subtype ?? "-"}\n`);
+
         // Capture session ID from any message.
         if (msg.session_id && !sessionId) {
           setSessionId(msg.session_id);
