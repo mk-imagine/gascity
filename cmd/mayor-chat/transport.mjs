@@ -1,15 +1,20 @@
-// Transport layer: V2 persistent session for multi-turn conversation.
+// Transport layer: V1 streaming input mode for persistent multi-turn
+// conversation with token-by-token streaming.
 //
-// Uses unstable_v2_createSession() to keep a single Claude Code process
-// alive across all turns. send() + stream() per turn — no subprocess
-// startup overhead after the first turn.
+// Uses query() with an AsyncIterable prompt source. This keeps a single
+// Claude Code process alive and yields stream_event messages with
+// incremental text deltas as tokens are generated.
 
-import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 
 export class MayorTransport {
   constructor(options = {}) {
-    this.session = null;
     this.sessionId = null;
+    this.query = null;
+    this.messageStream = null;
+    this.inputResolve = null;
+    this.inputQueue = [];
+    this.inputDone = false;
     this.options = {
       permissionMode: options.permissionMode ?? "dontAsk",
       allowedTools: options.allowedTools ?? [],
@@ -18,34 +23,80 @@ export class MayorTransport {
     };
   }
 
-  // Lazily create the session on first send.
-  _ensureSession() {
-    if (!this.session) {
-      this.session = unstable_v2_createSession(this.options);
-      // sessionId is not available until after first stream() yields.
+  // Create a push-based async iterable for the query's prompt source.
+  _createInputStream() {
+    const self = this;
+    return {
+      [Symbol.asyncIterator]() {
+        return {
+          next() {
+            if (self.inputQueue.length > 0) {
+              return Promise.resolve({ value: self.inputQueue.shift(), done: false });
+            }
+            if (self.inputDone) {
+              return Promise.resolve({ value: undefined, done: true });
+            }
+            return new Promise((resolve) => { self.inputResolve = resolve; });
+          }
+        };
+      }
+    };
+  }
+
+  // Push a user message into the input stream.
+  _pushMessage(text) {
+    const msg = {
+      type: "user",
+      message: { role: "user", content: text },
+    };
+    if (this.inputResolve) {
+      const r = this.inputResolve;
+      this.inputResolve = null;
+      r({ value: msg, done: false });
+    } else {
+      this.inputQueue.push(msg);
     }
   }
 
-  // Send a prompt and yield messages as they stream back.
+  // Lazily start the query on first send.
+  _ensureStarted() {
+    if (!this.query) {
+      const inputStream = this._createInputStream();
+      this.query = query({ prompt: inputStream, options: this.options });
+      // Start consuming the query's output in background.
+      // Messages are pulled by the send() caller via _readUntilTurnEnd().
+      this.messageStream = this.query[Symbol.asyncIterator]();
+    }
+  }
+
+  // Send a prompt and yield messages until the turn completes (result message).
   async *send(prompt) {
-    this._ensureSession();
+    this._ensureStarted();
+    this._pushMessage(prompt);
 
-    await this.session.send(prompt);
+    // Read messages until we see a result (turn complete).
+    while (true) {
+      const { value: msg, done } = await this.messageStream.next();
+      if (done) break;
 
-    for await (const message of this.session.stream()) {
-      // Capture session ID from any message that has it.
-      if (message.session_id) {
-        this.sessionId = message.session_id;
+      // Capture session ID.
+      if (msg.session_id && !this.sessionId) {
+        this.sessionId = msg.session_id;
       }
 
-      yield message;
+      yield msg;
+
+      // Result message marks end of this turn.
+      if (msg.type === "result") break;
     }
   }
 
   close() {
-    if (this.session) {
-      this.session.close();
-      this.session = null;
+    this.inputDone = true;
+    if (this.inputResolve) {
+      const r = this.inputResolve;
+      this.inputResolve = null;
+      r({ value: undefined, done: true });
     }
   }
 }

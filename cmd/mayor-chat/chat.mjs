@@ -50,6 +50,7 @@ function Chat() {
     if (!trimmed) return;
 
     if (trimmed === "/quit" || trimmed === "/exit") {
+      if (transportRef.current) transportRef.current.close();
       exit();
       return;
     }
@@ -68,18 +69,37 @@ function Chat() {
       return [...prev, { role: "assistant", text: "", streaming: true }];
     });
 
+    // Track accumulated text for streaming deltas.
+    let accumulatedText = "";
+
     try {
       for await (const msg of transportRef.current.send(trimmed)) {
-        // Debug: log every message type to stderr.
-        process.stderr.write(`[msg] type=${msg.type} subtype=${msg.subtype ?? "-"}\n`);
-
         // Capture session ID from any message.
         if (msg.session_id && !sessionId) {
           setSessionId(msg.session_id);
         }
 
+        // Stream events: incremental text deltas (token by token).
+        if (msg.type === "stream_event" && msg.event?.type === "content_block_delta") {
+          const delta = msg.event.delta;
+          if (delta?.type === "text_delta" && delta.text) {
+            accumulatedText += delta.text;
+            setMessages((prev) => {
+              const updated = [...prev];
+              if (assistantIdx.current >= 0 && assistantIdx.current < updated.length) {
+                updated[assistantIdx.current] = {
+                  role: "assistant",
+                  text: accumulatedText,
+                  streaming: true,
+                };
+              }
+              return updated;
+            });
+          }
+        }
+
+        // Complete assistant message (final text + tool calls).
         if (msg.type === "assistant" && msg.message?.content) {
-          // Accumulate text from assistant content blocks.
           let text = "";
           const tools = [];
 
@@ -97,9 +117,10 @@ function Chat() {
             }
           }
 
+          // Use the complete text (may differ from accumulated deltas).
+          accumulatedText = text;
           setMessages((prev) => {
             const updated = [...prev];
-            // Update the assistant message.
             if (assistantIdx.current >= 0 && assistantIdx.current < updated.length) {
               updated[assistantIdx.current] = {
                 role: "assistant",
@@ -107,8 +128,6 @@ function Chat() {
                 streaming: true,
               };
             }
-            // Append any tool calls after the assistant message.
-            // Only add tools not already present.
             const existingTools = updated.filter((m) => m.role === "tool").length;
             for (let i = existingTools; i < tools.length; i++) {
               updated.push(tools[i]);
@@ -151,6 +170,7 @@ function Chat() {
 
   useInput((ch, key) => {
     if (key.ctrl && ch === "c") {
+      if (transportRef.current) transportRef.current.close();
       exit();
     }
   });
