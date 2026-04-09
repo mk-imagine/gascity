@@ -1,125 +1,65 @@
-// Spike: Agent SDK streaming input mode.
+// Spike: Agent SDK V2 persistent session.
 //
-// Validates that query() accepts an AsyncIterable<SDKUserMessage> for
-// multi-turn conversation over a single persistent process. This is
-// the foundation for the mayor chat UI — one long-lived Claude Code
-// process, messages pushed in as the user types.
+// Validates multi-turn conversation over a single persistent Claude Code
+// process using the V2 send()/stream() API. This is the transport layer
+// for the mayor chat UI.
 //
 // Usage:
 //   docker run --rm --entrypoint node \
 //     -v ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro \
 //     -v ~/.claude/settings.json:/root/.claude/settings.json:ro \
 //     -v ~/.claude.json:/root/.claude.json:ro \
-//     gc-acp-spike /app/test-streaming-input.mjs
+//     -v $(pwd)/cmd/acp-spike/test-streaming-input.mjs:/app/test.mjs:ro \
+//     gc-acp-spike /app/test.mjs
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
 
-// A push-based async iterable. Call push() to send messages,
-// done() to signal completion. The query() function pulls from this.
-function createMessageStream() {
-  const queue = [];
-  let resolve = null;
-  let finished = false;
-
-  return {
-    push(msg) {
-      if (resolve) {
-        const r = resolve;
-        resolve = null;
-        r({ value: msg, done: false });
-      } else {
-        queue.push(msg);
-      }
-    },
-    done() {
-      finished = true;
-      if (resolve) {
-        const r = resolve;
-        resolve = null;
-        r({ value: undefined, done: true });
-      }
-    },
-    [Symbol.asyncIterator]() {
-      return {
-        next() {
-          if (queue.length > 0) {
-            return Promise.resolve({ value: queue.shift(), done: false });
-          }
-          if (finished) {
-            return Promise.resolve({ value: undefined, done: true });
-          }
-          return new Promise((r) => { resolve = r; });
-        }
-      };
-    }
-  };
-}
-
-// Helper: wait for ms milliseconds.
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const prompts = [
+  "Remember the number 42. Just say OK.",
+  "What number did I ask you to remember? Answer with just the number.",
+  "Say goodbye in exactly 5 words.",
+];
 
 async function main() {
-  const stream = createMessageStream();
+  console.log("[spike] creating persistent session...");
 
-  const options = {
-    allowedTools: [],
+  const session = unstable_v2_createSession({
     permissionMode: "dontAsk",
-  };
+    allowedTools: [],
+  });
 
-  console.log("[spike] starting query with streaming input...");
+  console.log("[spike] session created, sending prompts...\n");
 
-  // Start the query with our async iterable as the prompt source.
-  // This spawns ONE Claude Code process that stays alive.
-  const q = query({ prompt: stream, options });
+  for (let i = 0; i < prompts.length; i++) {
+    const prompt = prompts[i];
+    console.log(`━━━ Prompt ${i + 1}/${prompts.length} ━━━`);
+    console.log(`> ${prompt}\n`);
 
-  // Read responses in background.
-  const reader = (async () => {
-    let turnCount = 0;
-    for await (const message of q) {
-      if (message.type === "system" && message.subtype === "init") {
-        console.log(`[init] session=${message.session_id}, model=${message.model}`);
-      }
+    const start = Date.now();
+    await session.send(prompt);
 
-      if (message.type === "assistant" && message.message?.content) {
-        for (const block of message.message.content) {
-          if ("text" in block) {
+    for await (const msg of session.stream()) {
+      // Print assistant text as it streams.
+      if (msg.type === "assistant" && msg.message?.content) {
+        for (const block of msg.message.content) {
+          if (block.type === "text") {
             process.stdout.write(block.text);
           }
         }
       }
 
-      if (message.type === "result") {
-        turnCount++;
-        const cost = message.total_cost_usd?.toFixed(4) ?? "?";
-        console.log(`\n[turn ${turnCount}: ${message.subtype}, cost: $${cost}]`);
+      // Print result summary.
+      if (msg.type === "result") {
+        const elapsed = Date.now() - start;
+        const cost = msg.total_cost_usd?.toFixed(4) ?? "?";
+        console.log(`\n[${msg.subtype}, ${elapsed}ms, cost: $${cost}]\n`);
       }
     }
-    return turnCount;
-  })();
-
-  // Push messages with pauses to simulate interactive chat.
-  const prompts = [
-    "Remember the number 42. Just say OK.",
-    "What number did I ask you to remember? Answer with just the number.",
-    "Say goodbye in exactly 5 words.",
-  ];
-
-  for (let i = 0; i < prompts.length; i++) {
-    // Wait a bit for previous response to complete.
-    if (i > 0) await sleep(5000);
-
-    console.log(`\n━━━ Sending prompt ${i + 1}/${prompts.length} ━━━`);
-    console.log(`> ${prompts[i]}\n`);
-
-    stream.push({ type: "user", content: prompts[i] });
   }
 
-  // Wait for last response, then close.
-  await sleep(10000);
-  stream.done();
-
-  const turns = await reader;
-  console.log(`\n━━━ Streaming input spike complete (${turns} turns) ━━━`);
+  console.log("━━━ Spike complete ━━━");
+  console.log(`Session ID: ${session.sessionId}`);
+  session.close();
 }
 
 main().catch((err) => {
