@@ -23,9 +23,12 @@ const prompts = [
 async function main() {
   console.log("[spike] creating persistent session...");
 
+  // Don't specify model — let Claude Code pick it up from settings/subscription.
+  // Specifying model explicitly may force API key auth path.
   const session = unstable_v2_createSession({
     permissionMode: "dontAsk",
     allowedTools: [],
+    settingSources: ["user"],
   });
 
   console.log("[spike] session created, sending prompts...\n");
