@@ -1,18 +1,19 @@
 # Mayor Chat — Ink terminal UI for containerized Claude Code.
 #
 # Build:
-#   docker build -t mayor-chat -f cmd/mayor-chat/Dockerfile cmd/mayor-chat/
+#   docker build -t mayor-chat -f contrib/mayor-chat/Dockerfile contrib/mayor-chat/
 #
-# Run (interactive):
-#   docker run -d --name mayor-chat --entrypoint sleep \
-#     -v ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro \
-#     -v ~/.claude/settings.json:/root/.claude/settings.json:ro \
-#     -v ~/.claude.json:/root/.claude.json:ro \
-#     mayor-chat infinity
+# Run via gc-session-docker (recommended):
+#   Configure in city.toml with GC_DOCKER_HOME_MOUNT=true to provide
+#   credentials via the standard Gas City HOME mount pattern.
+#
+# Run standalone:
+#   docker run -d --name mayor-chat --entrypoint sleep mayor-chat infinity
 #   docker exec -it mayor-chat node /app/chat.mjs
 #
-# From local tmux pane:
-#   ssh namurim "docker exec -it mayor-chat node /app/chat.mjs"
+# Credentials: The Agent SDK discovers credentials from $HOME/.claude/
+# at runtime. Use GC_DOCKER_HOME_MOUNT or your own volume mounts to
+# provide them. Never bake credentials into the image.
 
 FROM node:20-slim
 
