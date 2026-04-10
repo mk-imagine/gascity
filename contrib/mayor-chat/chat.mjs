@@ -2,8 +2,9 @@
 // Mayor Chat — Ink terminal UI for interactive conversation with a
 // containerized Claude Code agent.
 //
-// Uses the Agent SDK V1 query() + resume for multi-turn conversation.
-// Each turn spawns a Claude Code subprocess; --resume maintains context.
+// Uses a persistent MayorTransport for multi-turn conversation.
+// The transport keeps a single query() stream/session alive across turns,
+// so context is maintained for the lifetime of this chat process.
 //
 // Usage (inside container):
 //   node chat.mjs
@@ -11,7 +12,7 @@
 // Usage (from local tmux pane, via SSH + docker exec):
 //   ssh namurim docker exec -it mayor-chat node /app/chat.mjs
 
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import Spinner from "ink-spinner";
@@ -74,9 +75,9 @@ function Chat() {
 
     try {
       for await (const msg of transportRef.current.send(trimmed)) {
-        // Capture session ID from any message.
-        if (msg.session_id && !sessionId) {
-          setSessionId(msg.session_id);
+        // Capture session ID from first message that has one.
+        if (msg.session_id) {
+          setSessionId((prev) => prev || msg.session_id);
         }
 
         // Stream events: incremental text deltas (token by token).
@@ -128,7 +129,18 @@ function Chat() {
                 streaming: true,
               };
             }
-            const existingTools = updated.filter((m) => m.role === "tool").length;
+            // Count tool messages already following THIS assistant message,
+            // not all tools in the conversation (which breaks across turns).
+            let existingTools = 0;
+            if (assistantIdx.current >= 0 && assistantIdx.current < updated.length) {
+              for (let i = assistantIdx.current + 1; i < updated.length; i++) {
+                if (updated[i].role === "tool") {
+                  existingTools++;
+                } else {
+                  break;
+                }
+              }
+            }
             for (let i = existingTools; i < tools.length; i++) {
               updated.push(tools[i]);
             }

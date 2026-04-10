@@ -17,14 +17,16 @@
 
 FROM node:20-slim
 
+ARG CLAUDE_CODE_VERSION=2.1.101
+
 WORKDIR /app
 
 # Install Claude Code globally (used as subprocess by Agent SDK).
-RUN npm install -g @anthropic-ai/claude-code 2>/dev/null
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 # Install project dependencies.
-COPY package.json .
-RUN npm install --omit=dev 2>/dev/null
+COPY package*.json ./
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
 
 # Copy app files.
 COPY chat.mjs transport.mjs ./

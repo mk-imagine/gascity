@@ -10,6 +10,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 export class MayorTransport {
   constructor(options = {}) {
     this.sessionId = null;
+    this._queryFn = options._queryFn ?? query;
     this.query = null;
     this.messageStream = null;
     this.inputResolve = null;
@@ -62,9 +63,9 @@ export class MayorTransport {
   _ensureStarted() {
     if (!this.query) {
       const inputStream = this._createInputStream();
-      this.query = query({ prompt: inputStream, options: this.options });
-      // Start consuming the query's output in background.
-      // Messages are pulled by the send() caller via _readUntilTurnEnd().
+      this.query = this._queryFn({ prompt: inputStream, options: this.options });
+      // Initialize the query's output stream.
+      // Messages are consumed by send() from this iterator until the turn ends.
       this.messageStream = this.query[Symbol.asyncIterator]();
     }
   }
