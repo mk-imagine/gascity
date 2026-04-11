@@ -200,16 +200,6 @@ func agentSessionOverrides(agents []config.Agent) map[string]bool {
 	return overrides
 }
 
-// hasACPAgents reports whether any agent in the config uses session = "acp".
-func hasACPAgents(agents []config.Agent) bool {
-	for _, a := range agents {
-		if a.Session == "acp" {
-			return true
-		}
-	}
-	return false
-}
-
 type sessionRoute struct {
 	sessionName string
 	providerKey string
