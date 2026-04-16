@@ -2,6 +2,7 @@ package auto
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -261,7 +262,7 @@ func TestPendingUnsupportedWhenBackendLacksInteractionSupport(t *testing.T) {
 	}
 
 	_, err := p.Pending("plain-agent")
-	if err != runtime.ErrInteractionUnsupported {
+	if !errors.Is(err, runtime.ErrInteractionUnsupported) {
 		t.Fatalf("Pending error = %v, want ErrInteractionUnsupported", err)
 	}
 }
